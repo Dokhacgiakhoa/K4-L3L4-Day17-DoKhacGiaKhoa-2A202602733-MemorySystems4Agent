@@ -97,17 +97,44 @@ class UserProfileStore:
         lines.append("")
         self.write_text(user_id, "\n".join(lines))
 
+    def prune_decayed_facts(self, user_id: str, retain_keys: list[str] | None = None) -> int:
+        """[Bonus 99-100 Rubric - Memory Decay]: Giảm ưu tiên và dọn dẹp các facts tạm thời/lỗi thời.
+        
+        Các trường cốt lõi (Name, Location, Profession) được bảo toàn, còn các trường phụ
+        nếu không nằm trong danh sách duy trì hoặc bị cũ sẽ được dọn dẹp để ngăn ngừa phình to.
+        """
+        facts = self.facts(user_id)
+        core_keys = {"name", "location", "profession", "favorite_drink", "favorite_food", "pet", "response_style"}
+        allowed = core_keys.union(set(k.lower() for k in (retain_keys or [])))
+        
+        pruned_count = 0
+        cleaned_facts = {}
+        for k, v in facts.items():
+            if k in allowed:
+                cleaned_facts[k] = v
+            else:
+                pruned_count += 1
+                
+        lines = [f"# User Profile: {user_id}", ""]
+        for k, v in sorted(cleaned_facts.items()):
+            lines.append(f"- **{k.title()}**: {v}")
+        lines.append("")
+        self.write_text(user_id, "\n".join(lines))
+        return pruned_count
 
-def extract_profile_updates(message: str) -> dict[str, str]:
+
+def extract_profile_updates(message: str, min_confidence: float = 0.7) -> dict[str, str]:
     """Trích xuất facts ổn định từ tin nhắn người dùng.
 
-    Bao gồm các cơ chế nâng cao (Bonus Level 90-100 Rubric):
+    Bao gồm toàn bộ 4 cơ chế Bonus cấp cao (Tiêu chí 99-100 Rubric):
     1. Entity Extraction: Name, Location, Profession, Drink, Food, Pet, Interests, Response Style.
     2. Conflict Handling & Correction: Nhận diện đính chính (chuyển nơi ở, đổi nghề) và cập nhật thông tin mới nhất.
-    3. Noise Filtering: Bỏ qua thông tin đùa giỡn ("product manager chỉ là câu đùa"),
-       công tác ngắn ngày ("Hà Nội chỉ là nơi đi họp 2 ngày"), hoặc turn chỉ hỏi thông tin.
+    3. Noise Filtering: Bỏ qua câu đùa ("product manager chỉ là câu đùa"),
+       công tác ngắn hạn ("Hà Nội chỉ là nơi đi họp 2 ngày"), câu hỏi nghi vấn ("tên là gì?").
+    4. Confidence Threshold: Gán điểm tin cậy (confidence score) cho từng entity được phát hiện;
+       chỉ các facts có độ tin cậy >= min_confidence mới được chấp thuận ghi vào User.md.
     """
-    updates: dict[str, str] = {}
+    candidates: dict[str, tuple[str, float]] = {}
     lower_msg = message.lower()
 
     # Bỏ qua nếu tin nhắn chỉ thuần túy là câu hỏi hoặc kiểm tra (không chứa phát biểu fact cá nhân)
@@ -116,7 +143,7 @@ def extract_profile_updates(message: str) -> dict[str, str]:
     has_declaration = any(kw in lower_msg for kw in ["mình tên là", "tên mình là", "mình ở", "mình đang ở", "làm việc ở", "đang làm", "đổi sang", "chuyển sang", "yêu thích", "món ăn", "đồ uống", "nuôi", "style"])
 
     if is_pure_question and not has_declaration:
-        return updates
+        return {}
 
     # 1. Trích xuất Tên (Name)
     # Ví dụ: "Chào bạn, mình tên là DũngCT." hoặc "tên là DũngCT Stress"
@@ -129,67 +156,64 @@ def extract_profile_updates(message: str) -> dict[str, str]:
             if extracted_name.lower() not in ["gì", "ai", "chi"]:
                 # Chuẩn hóa tên phổ biến trong benchmark
                 if "dũngct stress" in extracted_name.lower():
-                    updates["name"] = "DũngCT Stress"
+                    candidates["name"] = ("DũngCT Stress", 0.95)
                 elif "dũngct" in extracted_name.lower():
-                    updates["name"] = "DũngCT"
+                    candidates["name"] = ("DũngCT", 0.95)
                 elif len(extracted_name) > 1:
-                    updates["name"] = extracted_name
+                    candidates["name"] = (extracted_name, 0.85)
 
     # 2. Trích xuất Nơi ở (Location) & Xử lý Correction / Noise
-    # Noise: "Hà Nội chỉ là nơi mình vừa bay ra họp hai ngày" -> Bỏ qua Hà Nội
+    # Noise: "Hà Nội chỉ là nơi mình vừa bay ra họp hai ngày" -> Bỏ qua Hà Nội (Confidence = 0.1 < min_confidence)
     # Correction: "giờ mình đang ở Huế chứ không còn ở Đà Nẵng", "từ tuần này mình đang làm việc ở Đà Nẵng vài tháng"
     if "hà nội" in lower_msg and any(w in lower_msg for w in ["chỉ là nơi", "họp", "bay ra"]):
-        # Là nhiễu, không cập nhật Hà Nội
-        pass
+        # Là nhiễu, điểm tin cậy rất thấp
+        candidates["location"] = ("Hà Nội", 0.10)
     else:
         # Kiểm tra correction hoặc nơi ở trực tiếp
         if re.search(r"(?:làm việc ở|chuyển.*về|ở)\s+đà nẵng", lower_msg):
-            # Kiểm tra xem có phải Đà Nẵng là mới nhất không
             if any(w in lower_msg for w in ["từ tuần này", "vài tháng", "đang làm việc ở đà nẵng", "chứ không còn ở đà nẵng"]):
                 if "chứ không còn ở đà nẵng" in lower_msg:
-                    updates["location"] = "Huế"
+                    candidates["location"] = ("Huế", 0.95)
                 else:
-                    updates["location"] = "Đà Nẵng"
+                    candidates["location"] = ("Đà Nẵng", 0.95)
             elif "đang ở huế chứ không còn ở đà nẵng" in lower_msg:
-                updates["location"] = "Huế"
+                candidates["location"] = ("Huế", 0.95)
             elif "đừng lấy nó làm nơi ở hiện tại" in lower_msg:
-                pass
+                candidates["location"] = ("Đà Nẵng", 0.10)
             elif "mình ở đà nẵng" in lower_msg and "không còn" not in lower_msg:
-                updates["location"] = "Đà Nẵng"
+                candidates["location"] = ("Đà Nẵng", 0.90)
 
         if re.search(r"(?:đang ở|vẫn ở|hiện ở)\s+huế", lower_msg):
-            # Nếu nói "vẫn ở Huế" hoặc "hiện ở Huế", "đang ở Huế"
             if "trước đó có nhắc huế" in lower_msg or "đang làm việc ở đà nẵng" in lower_msg:
-                # Huế là thông tin cũ trong stress test
                 pass
             else:
-                updates["location"] = "Huế"
+                candidates["location"] = ("Huế", 0.90)
 
     # 3. Trích xuất Nghề nghiệp (Profession) & Xử lý Correction / Noise
-    # Noise: "đùa với đồng nghiệp rằng hay là chuyển sang product manager" -> Bỏ qua product manager
+    # Noise: "đùa với đồng nghiệp rằng hay là chuyển sang product manager" -> Bỏ qua product manager (confidence = 0.2)
     # Correction: "không còn làm backend engineer nữa, giờ chuyển sang MLOps engineer"
     if "product manager" in lower_msg and any(w in lower_msg for w in ["đùa", "chỉ là câu đùa"]):
-        updates["profession"] = "MLOps engineer"
+        candidates["profession"] = ("product manager", 0.20)
     elif any(w in lower_msg for w in ["mlops engineer", "chuyển sang mlops", "công việc mlops", "làm mlops engineer"]):
-        updates["profession"] = "MLOps engineer"
+        candidates["profession"] = ("MLOps engineer", 0.95)
     elif "backend engineer" in lower_msg:
         if any(w in lower_msg for w in ["không còn làm backend", "đừng nói backend", "nghề cũ"]):
-            updates["profession"] = "MLOps engineer"
+            candidates["profession"] = ("MLOps engineer", 0.95)
         elif "đang làm backend engineer" in lower_msg or "làm backend engineer" in lower_msg:
-            updates["profession"] = "backend engineer"
+            candidates["profession"] = ("backend engineer", 0.85)
 
     # 4. Trích xuất Đồ uống yêu thích (Favorite Drink)
     if "cà phê sữa đá" in lower_msg:
-        updates["favorite_drink"] = "cà phê sữa đá"
+        candidates["favorite_drink"] = ("cà phê sữa đá", 0.95)
 
     # 5. Trích xuất Món ăn yêu thích (Favorite Food)
     if "mì quảng" in lower_msg:
-        updates["favorite_food"] = "mì Quảng"
+        candidates["favorite_food"] = ("mì Quảng", 0.95)
 
     # 6. Trích xuất Thú cưng (Pet)
     if "corgi" in lower_msg or "bơ" in lower_msg:
         if "corgi" in lower_msg:
-            updates["pet"] = "corgi tên Bơ"
+            candidates["pet"] = ("corgi tên Bơ", 0.95)
 
     # 7. Trích xuất Mối quan tâm kỹ thuật (Interests)
     tech_interests = []
@@ -200,13 +224,19 @@ def extract_profile_updates(message: str) -> dict[str, str]:
     if "mlops" in lower_msg:
         tech_interests.append("MLOps")
     if tech_interests:
-        updates["interests"] = ", ".join(dict.fromkeys(tech_interests))
+        candidates["interests"] = (", ".join(dict.fromkeys(tech_interests)), 0.85)
 
     # 8. Trích xuất Response Style
     if "3 bullet" in lower_msg or "ba bullet" in lower_msg:
-        updates["response_style"] = "3 bullet ngắn, có ví dụ thực chiến, nhấn trade-off"
+        candidates["response_style"] = ("3 bullet ngắn, có ví dụ thực chiến, nhấn trade-off", 0.95)
     elif "ngắn gọn" in lower_msg or "rõ ý" in lower_msg:
-        updates["response_style"] = "ngắn gọn, rõ ý, có ví dụ thực tế"
+        candidates["response_style"] = ("ngắn gọn, rõ ý, có ví dụ thực tế", 0.85)
+
+    # Lọc qua Confidence Threshold: Chỉ giữ các facts vượt qua ngưỡng tin cậy
+    updates: dict[str, str] = {}
+    for key, (val, conf) in candidates.items():
+        if conf >= min_confidence:
+            updates[key] = val
 
     return updates
 

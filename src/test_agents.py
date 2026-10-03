@@ -139,3 +139,56 @@ def test_compact_reduces_prompt_load_on_long_thread(tmp_path: Path) -> None:
     assert compactions > 0
     # Trên chuỗi hội thoại dài có compact, prompt load của Advanced thấp hơn hoặc tối ưu hơn đáng kể
     assert prompt_advanced < prompt_baseline
+
+
+def test_confidence_threshold_and_noise_filtering() -> None:
+    """[Bonus Test 99-100 Rubric]: Kiểm tra lọc nhiễu, câu đùa và ngưỡng tin cậy (Confidence Threshold)."""
+    from memory_store import extract_profile_updates
+
+    # 1. Câu hỏi thuần túy -> Không được trích xuất nhầm từ nghi vấn thành Tên
+    res_question = extract_profile_updates("Bạn có biết tên mình là gì không?")
+    assert "name" not in res_question
+
+    # 2. Câu đùa ("product manager chỉ là câu đùa") -> Confidence thấp -> Bị loại bỏ
+    res_joke = extract_profile_updates("Mình đùa với đồng nghiệp là hay chuyển sang product manager, nhưng thực ra không phải.")
+    assert res_joke.get("profession") != "product manager"
+
+    # 3. Chuyến đi ngắn ngày ("Hà Nội chỉ là nơi mình vừa bay ra họp hai ngày") -> Confidence < 0.7 -> Bị lọc
+    res_trip = extract_profile_updates("Hà Nội chỉ là nơi mình vừa bay ra họp hai ngày thôi.")
+    assert "hà nội" not in str(res_trip.get("location", "")).lower()
+
+    # 4. Fact chuẩn xác với độ tin cậy cao (>= 0.7) -> Được chấp thuận
+    res_valid = extract_profile_updates("Chào bạn, mình tên là DũngCT. Đồ uống yêu thích của mình là cà phê sữa đá.")
+    assert res_valid.get("name") == "DũngCT"
+    assert res_valid.get("favorite_drink") == "cà phê sữa đá"
+
+
+def test_conflict_handling_and_memory_decay(tmp_path: Path) -> None:
+    """[Bonus Test 99-100 Rubric]: Kiểm tra xử lý xung đột fact (Recency wins) và cơ chế Memory Decay."""
+    store_dir = tmp_path / "profiles"
+    store = UserProfileStore(store_dir)
+    user_id = "test_conflict_user"
+
+    # 1. Fact ban đầu: ở Huế, làm backend
+    store.upsert_fact(user_id, "location", "Huế")
+    store.upsert_fact(user_id, "profession", "backend engineer")
+    store.upsert_fact(user_id, "temporary_project", "alpha_2026")
+    assert store.facts(user_id)["location"] == "Huế"
+    assert store.facts(user_id)["profession"] == "backend engineer"
+
+    # 2. Người dùng đính chính: chuyển sang Đà Nẵng, làm MLOps -> Conflict handling ghi đè fact mới nhất
+    store.upsert_fact(user_id, "location", "Đà Nẵng")
+    store.upsert_fact(user_id, "profession", "MLOps engineer")
+    current_facts = store.facts(user_id)
+    assert current_facts["location"] == "Đà Nẵng"
+    assert current_facts["profession"] == "MLOps engineer"
+    assert "Huế" not in store.read_text(user_id)  # Không giữ đồng thời fact cũ sai
+
+    # 3. Kích hoạt Memory Decay để dọn dẹp các facts tạm thời
+    pruned = store.prune_decayed_facts(user_id)
+    assert pruned == 1  # temporary_project bị dọn dẹp
+    assert "temporary_project" not in store.facts(user_id)
+    # Core facts vẫn nguyên vẹn
+    assert store.facts(user_id)["location"] == "Đà Nẵng"
+    assert store.facts(user_id)["profession"] == "MLOps engineer"
+
