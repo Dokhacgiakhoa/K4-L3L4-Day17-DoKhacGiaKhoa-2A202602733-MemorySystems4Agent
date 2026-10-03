@@ -163,7 +163,23 @@ python src/benchmark.py
 pytest src/test_agents.py -v
 ```
 
-Benchmark cần in ra hai bảng: **Standard Benchmark** và **Long-Context Stress Benchmark**. Mỗi bảng so sánh Baseline với Advanced theo đủ 6 cột trong phần "Chỉ số benchmark cần hiểu".
+Benchmark in ra hai bảng: **Standard Benchmark** và **Long-Context Stress Benchmark** so sánh Baseline với Advanced theo đủ 6 cột tiêu chuẩn.
+
+### Kết quả Benchmark Thực nghiệm
+
+#### 1. Standard Benchmark (`data/conversations.json` - 10 hội thoại)
+| Agent | Agent tokens only | Prompt tokens processed | Cross-session recall | Response quality | Memory growth (bytes) | Compactions |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Baseline Agent** | 2,550 | 25,017 | **4.0%** | 0.10 | 0 B | 0 |
+| **Advanced Agent** | 4,669 | 40,182 | **100.0%** | **0.91** | 299 B | 10 |
+
+#### 2. Long-Context Stress Benchmark (`data/advanced_long_context.json` - 16 turns dài)
+| Agent | Agent tokens only | Prompt tokens processed | Cross-session recall | Response quality | Memory growth (bytes) | Compactions |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Baseline Agent** | 442 | 32,710 | **0.0%** | 0.10 | 0 B | 0 |
+| **Advanced Agent** | 960 | **10,976** *(giảm ~66.4%)* | **100.0%** | **0.97** | 234 B | 27 |
+
+> Xem báo cáo phân tích chi tiết về trade-off token, recall và các cơ chế xử lý nhiễu / đính chính tại [BENCHMARK_ANALYSIS.md](BENCHMARK_ANALYSIS.md).
 
 ## Cách dùng repo này
 
@@ -180,5 +196,7 @@ Nếu các bạn là giảng viên hoặc reviewer:
 
 - `Guide.md`: hướng dẫn từng bước để hoàn thành lab
 - `Rubric.md`: tiêu chí chấm điểm và bonus
+- `BENCHMARK_ANALYSIS.md`: phân tích chuyên sâu trade-off và kỹ thuật bonus
 
 Track này được thiết kế để các bạn không chỉ “dùng agent”, mà còn bắt đầu nghĩ như một người thiết kế **memory system** cho agent production.
+
